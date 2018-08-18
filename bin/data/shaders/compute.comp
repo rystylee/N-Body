@@ -1,0 +1,80 @@
+#version 430
+
+/*
+ * Compute shader that computes N-body gravitational attraction between a list of particles given their mass and position. Updates velocity.
+ * */
+
+struct Particle
+{
+    vec4 pos; // w is mass
+    vec4 vel;
+};
+
+layout(std430, binding = 0) buffer Particles
+{
+    Particle p[];
+};
+
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+shared vec4 sharedData[gl_WorkGroupSize.x];
+
+uniform int uNumParticles;
+uniform float uG;
+uniform float uDt;
+uniform float uEPS2;
+uniform float uPower;
+
+vec3 bodyBodyInteraction(in vec3 r, in float m_j)
+{       
+    return r * m_j / pow(dot(r,r) + uEPS2, uPower);
+}  
+
+void main() 
+{
+    // Compute the velocity at time step i + 1/2 using the particle positions at time step i;
+    // Shared (on-chip) memory is employed to reduce redundant calls to global memory
+	
+    // uint index = gl_GlobalInvocationID.x + ubo.work_group_offset.x * gl_WorkGroupSize.x;
+    uint index = gl_GlobalInvocationID.x;
+    vec4 pos_i;
+
+    if(index < uNumParticles)
+    {
+        pos_i = p[index].pos;
+    }
+    else
+    {
+        pos_i = vec4(0.0);
+    }
+
+    vec4 acceleration = vec4(0.0);
+
+    for(uint j=0; j<uNumParticles; j+=gl_WorkGroupSize.x)//gl_WorkGroupSize.x)
+    {
+        // Load xyzm data into local buffer
+        if(j+gl_LocalInvocationID.x < uNumParticles)
+        {
+            sharedData[gl_LocalInvocationID.x] = p[j+gl_LocalInvocationID.x].pos;
+        }
+        else
+        {
+            sharedData[gl_LocalInvocationID.x] = vec4(0.0);
+        }
+
+        memoryBarrierShared();
+        barrier();
+
+        for(uint k=0; k<gl_WorkGroupSize.x; k ++)
+        {
+            vec4 pos_j = sharedData[k];
+            acceleration.xyz += uG * bodyBodyInteraction(pos_j.xyz - pos_i.xyz, pos_j.w);
+        }
+    }
+
+    if(index < uNumParticles)
+    {
+        p[index].vel += acceleration * uDt;
+        p[index].pos.xyz += p[index].vel.xyz * uDt;
+    }
+}
